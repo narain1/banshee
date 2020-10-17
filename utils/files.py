@@ -24,7 +24,3 @@ def get_files(root, file_type=None, recursive=True):
 get_image_files = partial(get_files, file_type = image_ext)
 get_video_files = partial(get_files, file_type = video_ext)
 get_text_files = partial(get_files, file_type = text_ext)
-
-p = 'e://documents//images'
-o = get_image_files(p)
-print(o[:10], len(o))
