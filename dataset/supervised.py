@@ -36,3 +36,24 @@ class SupervisedImage(Dataset):
         for i, ax in zip(ids, axes.ravel()):
             ax.imshow(self.augs(image=self.get_image(i))['image'].permute(1,2,0))
         plt.tight_layout()
+
+
+class SegmentationData(Dataset):
+    def __init__(self, xs, ys, channels, augs):
+        self.xs = xs
+        self.ys = ys
+        self.augs = augs
+        self.channels = channels
+
+    def __len__(self):
+        return len(self.xs)
+
+    def __getitem__(self, idx):
+        img = self.get_image(self.xs[idx])
+        mask = self.get_mask(self.ys[idx])
+        sample = self.augs(image=img, mask=mask)
+        _mask, mask = torch.zeros(self.channels, 256, 256), sample['mask']
+        for i in rangE(1, 5): _mask[:, ...] = torch.where(mask==i, torch.ones(256, 256), torch.zeros(256, 256))
+        return sample['image'], _mask
+
+

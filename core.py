@@ -1,4 +1,5 @@
 import json
+from functools import wraps
 
 class DictWrapper:
     def __init__(self, d):
@@ -13,3 +14,12 @@ class attrdict(dict):
     __getattr__ = dict.__getitem__
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
+
+def add(cls):
+    def _inner(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            return f(*args, **kwargs)
+        setattr(cls, f.__name__, wrapper)
+        return f
+    return _inner
