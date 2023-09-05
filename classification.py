@@ -1,7 +1,7 @@
 from fastai.vision.all import *
 import timm
 from torch.utils.data import Dataset
-import Albumentations as A
+import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 import cv2
 from typing import list
