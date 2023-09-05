@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 import cv2
-from typing import list
+from typing import List
 from sklearn.model_selection import train_test_split
 import kornia as K
 import warnings
