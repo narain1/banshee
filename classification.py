@@ -49,18 +49,18 @@ class ImgProcCB(Callback):
 def train_split(k, c):
     os.makedirs('logs', exist_ok=True)
     df = pd.read_csv('train.csv')
-    df['path'] = 'images_' + df['fold'].astype(str) + '/' + df['Image Index']
+    df['path'] = '/scratch/npattab1/data/images_' + df['fold'].astype(str) + '/' + df['Image Index']
 
     train_df = df[(df['fold'] == c[0]) |
                   (df['fold'] == c[1]) |
                   (df['fold'] == c[2])].reset_index(drop=True)
     val_df = df[df['fold'] == c[3]].reset_index(drop=True)
 
-    train_ds = ClassificationDataset(train_df['path'], train_df.iloc[:, 5:], get_medium_augmentations(512))
-    val_ds = ClassificationDataset(val_df['path'], val_df.iloc[:, 5:], val_augmentations(512))
+    train_ds = ClassificationDataset(train_df['path'], train_df.iloc[:, 5:], get_light_augmentations(512))
+    val_ds = ClassificationDataset(val_df['path'], val_df.iloc[:, 5:], val_augs(512))
 
     dls = DataLoaders.from_dsets(train_ds, val_ds, batch_size=64).cuda()
-    model = get_model('convnextv2_large', 15, in_chans=1).cuda()
+    model = get_model('convnextv2_base', 15, in_chans=1).cuda()
     learn = Learner(dls, model, splitter=default_split, 
                                     metrics=[accuracy_multi], 
                                     loss_func=BCEWithLogitsLossFlat(), cbs=[ImgProcCB()]).to_fp16()
@@ -68,14 +68,14 @@ def train_split(k, c):
     lr = learn.lr_find(show_plot=False)
     learn.fine_tune(24, base_lr=lr.valley, freeze_epochs=2, 
                                     cbs=[
-                                        CSVLogger(fname=f'logs_{fold}.csv', append=False),
+                                        CSVLogger(fname=f'logs_{k}.csv', append=False),
                                         #                     MixUp(),
                                         EarlyStoppingCallback(monitor='accuracy_multi', comp=np.greater, patience=4),
                                         GradientClip(1.0)],)
-    torch.save(model.state_dict(), f'models/model_{fold}.pth')
+    torch.save(learn.model.state_dict(), f'models/model_{k}.pth')
 
 
-for k in range(10):
+for k in range(1):
     perms = list(permutations(range(5), 4))
     c = random.choice(perms)
     print(c)
