@@ -22,9 +22,9 @@ from transformers import (
 import torchaudio.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from transformers import TrainingArguments, Trainer, EarlyStoppingCallback
-from bnunicodenormalizer import Normalizer
-import jiwer
-import kenlm
+# from bnunicodenormalizer import Normalizer
+from jiwer
+# import kenlm
 
 torchaudio.set_audio_backend('soundfile')
 
@@ -173,7 +173,8 @@ def compute_metrics(pred):
     pred_str = processor.batch_decode(pred_ids)
     # we do not want to group tokens when computing the metrics
     label_str = processor.batch_decode(pred.label_ids, group_tokens=False)
-    wer = wer_metric.compute(predictions=pred_str, references=label_str)
+    # wer = wer_metric.compute(predictions=pred_str, references=label_str)
+    wer = jiwer.wer(pred_str, hypothesis)
     return {"wer": wer}
 
 model = Wav2Vec2ForCTC.from_pretrained(
