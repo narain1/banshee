@@ -3,11 +3,14 @@ import json
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
+from functools import partial
 
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import KFold
+from datasets import load_dataset, load_metric, Audio
+import pyctcdecode
 
 from transformers import (
     Wav2Vec2ForCTC,
@@ -17,13 +20,19 @@ from transformers import (
 )
 import torchaudio.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from transformers import TrainingArguments, Trainer, EarlyStoppingCallback
+from bnunicodenormalizer import Normalizer
+import jiwer
+import kenlm
+
+torchaudio.set_audio_backend('soundfile')
 
 import librosa
 import warnings
 warnings.simplefilter('ignore')
 
-def read_audio(p, target_sr = 16_0000):
-    audio, sr = torch.load(p)
+def read_audio(p, target_sr=16_0000):
+    audio, sr = torchaudio.load(p)
     resample = F.resample(audio, sr, target_sr, lowpass_filter_width=6)
     return resample
 
@@ -74,40 +83,6 @@ def ctc_data_collator(batch):
     batch["labels"] = labels
     return batch
 
-
-def train_one_epoch(model, train_loader, optimizer, scheduler, device='cuda'):
-    model.train()
-    pbar = tqdm(train_loader, total=len(train_loader))
-    avg_loss = 0
-    for data in pbar:
-        data = {k: v.to(device) for k, v in data.items()}
-        loss = model(**data).loss
-        loss_itm = loss.item()
-
-        avg_loss += loss_itm
-        pbar.set_description(f"loss: {loss_itm:4f}")
-
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-
-    return avg_loss/len(train_loader)
-
-
-@torch.no_grad()
-def valid_one_epoch(model, val_loader, device='cuda'):
-    pbar = tqdm(val_loader, total=len(val_loader))
-    avg_loss = 0
-    for data in pbar:
-        data = {k: v.to(device) for k,v in data.items()}
-        loss = model(**data).loss
-        loss_itm = loss.item()
-
-        avg_loss += loss_itm
-        pbar.set_description(f"val_loss: {loss_itm:4f}")
-
-    return avg_loss / len(val_loader)
 
 
 ds_root = '/scratch/npattab1/audio/data'
