@@ -46,9 +46,11 @@ path1 = '/scratch/npattab1/audio/indicwave/indicwav2vec_v1_bengali'
 path2 = '/scratch/npattab1/audio/wave2vec_data'
 audio_path = "/scratch/npattab1/audio/data/train_mp3s"
 
+
 processor = Wav2Vec2Processor.from_pretrained(path1)
 vocab_dict = processor.tokenizer.get_vocab()
 sorted_vocab_dict = {k:v for k, v in sorted(vocab_dict.items(), key=lambda x: x[1])}
+
 
 decoder = pyctcdecode.build_ctcdecoder(
     list(sorted_vocab_dict.keys()),
@@ -61,30 +63,6 @@ processor_with_lm = Wav2Vec2ProcessorWithLM(
     tokenizer=processor.tokenizer,
     decoder=decoder
 )
-
-
-sentences = pd.read_csv("normalized.csv")
-indexes = pd.read_csv('indexes.csv', use_cols=['id'])
-
-sentences = sentences[~sentences.index.isin(indexes.values.flatten())].reset_index(drop=True)
-
-kfs = KFold(n_splits=5, shuffle=True, random_state=2312)
-fold_ids = list(kfs.split(sentences))[FOLD][1]
-
-sentences = sentences.iloc[fold_ids, :].reset_index(drop=True)
-
-kfs2 = KFold(n_splits=5, shuffle=True, random_state=2312)
-train_ids, val_ids = list(kfs2.split(sentences))[0]
-
-train = sentences.iloc[train_ids, :].reset_index(drop=True)
-valid = sentences.iloc[val_ids, :].reset_index(drop=True)
-
-all_ids = sentences['id'].to_list()
-train_ids = train['id'].to_list()
-valid_ids = valid['id'].to_list()
-
-print(len(train_ids))
-print(len(valid_ids))
 
 class W2v2Dataset(torch.utils.data.Dataset):
     def __init__(self, df):
@@ -107,9 +85,6 @@ class W2v2Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.df)
-
-train_dataset = W2v2Dataset(train)
-valid_dataset = W2v2Dataset(valid)
 
 
 @dataclass
@@ -171,8 +146,6 @@ class DataCollatorCTCWithPadding:
         batch["labels"] = labels
         return batch
 
-data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
-
 def compute_metrics(pred):
     pred_logits = pred.predictions
     pred_ids = np.argmax(pred_logits, axis=-1)
@@ -182,6 +155,37 @@ def compute_metrics(pred):
     label_str = processor.batch_decode(pred.label_ids, group_tokens=False)
     wer = wer_metric.compute(predictions=pred_str, references=label_str)
     return {"wer": wer}
+
+
+
+sentences = pd.read_csv("normalized.csv")
+indexes = pd.read_csv('indexes.csv', use_cols=['id'])
+
+sentences = sentences[~sentences.index.isin(indexes.values.flatten())].reset_index(drop=True)
+
+kfs = KFold(n_splits=5, shuffle=True, random_state=2312)
+fold_ids = list(kfs.split(sentences))[FOLD][1]
+
+sentences = sentences.iloc[fold_ids, :].reset_index(drop=True)
+
+kfs2 = KFold(n_splits=5, shuffle=True, random_state=2312)
+train_ids, val_ids = list(kfs2.split(sentences))[0]
+
+train = sentences.iloc[train_ids, :].reset_index(drop=True)
+valid = sentences.iloc[val_ids, :].reset_index(drop=True)
+
+all_ids = sentences['id'].to_list()
+train_ids = train['id'].to_list()
+valid_ids = valid['id'].to_list()
+
+print('train dataset size', train_ids.shape)
+print('validation dataset size', valid_ids.shape)
+
+data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+
+train_dataset = W2v2Dataset(train)
+valid_dataset = W2v2Dataset(valid)
+
 
 model = Wav2Vec2ForCTC.from_pretrained(
     path1,
@@ -199,7 +203,6 @@ model = Wav2Vec2ForCTC.from_pretrained(
 )
 
 model.freeze_feature_extractor()
-
 
 training_args = TrainingArguments(
     output_dir='model/',
@@ -242,4 +245,4 @@ trainer = Trainer(
 )
 
 trainer.train()
-trainer.save_model('model/')
+trainer.save_model(f'model_{FOLD}/')
