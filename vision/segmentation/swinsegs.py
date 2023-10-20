@@ -42,7 +42,8 @@ class UNetSwin(nn.Module):
         in_chans=3,
         pretrained=True,
         upsampling=4,
-        n_classes=1
+        n_classes=1,
+        decoder_channels=(512, 256, 128, 64)
     ):
         super().__init__()
         self.backbone = timm.create_model(model_name,
@@ -52,7 +53,7 @@ class UNetSwin(nn.Module):
         feature_channels = [o['num_chs'] for o in self.backbone.feature_info]
         self.decoder = smp.decoders.unet.decoder.UnetDecoder(encoder_channels=feature_channels,
                                                              n_blocks=4,
-                                                             decoder_channels=(512, 256, 128, 64),
+                                                             decoder_channels=decoder_channels,
                                                              attention_type=None)
         self.head = smp.base.heads.SegmentationHead(in_channels=128,
                                                     out_channels=n_classes,
@@ -66,5 +67,3 @@ class UNetSwin(nn.Module):
         decoder_output = self.decoder(*features)
         masks = self.head(decoder_output)
         return masks
-
-
