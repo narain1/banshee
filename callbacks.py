@@ -33,3 +33,53 @@ class Cutmix(Callback):
         x2 = torch.clamp(cx + cut_w // 2, 0, w)
         y2 = torch.clamp(cy + cut_h // 2, 0, h)
         return x1, y1, x2, y2
+
+
+from fastai.callback import Callback
+from sklearn.metrics import roc_auc_score
+import numpy as np
+import torch
+
+class MultiAUC(Callback):
+    def __init__(self, average='macro', flatten=True):
+        super().__init__()
+        self.average = average
+        self.flatten = flatten
+        self.metric_name = f'MultiAUC_{average}'
+
+    def on_epoch_begin(self, **kwargs):
+        self.outputs, self.targets = [], []
+
+    def on_batch_end(self, last_output, last_target, **kwargs):
+        # Flatten the inputs if required
+        if self.flatten:
+            last_output = last_output.view(-1, last_output.shape[-1])
+            last_target = last_target.view(-1, last_target.shape[-1])
+
+        # Convert tensors to numpy arrays
+        last_output = last_output.detach().cpu().numpy()
+        last_target = last_target.detach().cpu().numpy()
+
+        # Append outputs and targets
+        self.outputs.append(last_output)
+        self.targets.append(last_target)
+
+    def on_epoch_end(self, last_metrics, **kwargs):
+        # Concatenate outputs and targets for all batches
+        outputs = np.concatenate(self.outputs)
+        targets = np.concatenate(self.targets)
+
+        # Calculate the multi-AUC score
+        auc_scores = []
+        for class_index in range(outputs.shape[1]):
+            auc = roc_auc_score(targets[:, class_index], outputs[:, class_index])
+            auc_scores.append(auc)
+
+        if self.average == 'macro':
+            auc_score = np.mean(auc_scores)
+        elif self.average == 'micro':
+            auc_score = roc_auc_score(targets, outputs, average=self.average)
+        else:
+            raise ValueError(f"Unsupported average type: {self.average}")
+
+        return add_metrics(last_metrics, auc_score)
