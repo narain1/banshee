@@ -15,6 +15,9 @@ from fastai.vision.all import *
 from sklearn.model_selection import train_test_split
 import wandb
 from fastai.callback.wandb import *
+import kornia as K
+from sklearn.metrics import roc_auc_score
+import segmentation_models_pytorch as smp
 
 
 wandb.init(project='chestxdet')
@@ -24,8 +27,8 @@ with open('ChestX_Det_train.json') as f:
 
 img_root = '/scratch/npattab1/segmentation/data4/train_data/train'
 train_masks = '/scratch/npattab1/segmentation/data4/train_masks'
-mean = [0.65459856,0.48386562,0.69428385]
-std = [0.15167958,0.23584107,0.13146145]
+mean = [0.485,0.456,0.406]
+std = [0.229,0.224,0.225]
 
 classes = set()
 for item in o:
@@ -52,13 +55,11 @@ def get_aug(img_sz, p=1.0):
                 A.RandomBrightnessContrast(),
             ], p=0.3),
             A.Resize(img_sz, img_sz),
-            A.Normalize(mean=mean, std=std)
         ], p=p)
 
 def val_aug(img_sz):
     return A.Compose([
         A.Resize(img_sz, img_sz),
-        A.Normalize(mean=mean, std=std)
     ])
 
 # Fix fastai bug to enable fp16 training with dictionaries
@@ -264,60 +265,133 @@ class SegmentationDataset(Dataset):
             uniqs = np.eye(self.n_classes + 1, dtype=np.float32)[np.unique(mask)].sum(axis=0)
             uniqs[0] = 0
         else:
-            mask = np.ones(img.size) * -1
-            uniqs = np.zeros(14, dtype=np.float32)
+            mask = np.full(img.size, np.nan)
+            uniqs = np.zeros(self.n_classes + 1, dtype=np.float32)
             uniqs[0] = 1
         samp = {'image': np.array(img),
                 'mask': np.array(mask)}
         samp = self.augs(**samp)
-        img = samp['image']
-        mask = samp['mask']
-        _mask = np.zeros((mask.shape[0], mask.shape[1], len(self.classes)), dtype=np.uint8)
-        _mask[:,:,np.arange(self.n_classes)] = (mask[:,:,np.newaxis] == np.arange(self.n_classes))
+        img, mask = samp['image'], samp['mask']
+        # if os.path.exists(mask_path):
+        #     _mask = np.zeros((mask.shape[0], mask.shape[1], self.n_classes), dtype=np.float32)
+        #     _mask[:,:,np.arange(self.n_classes)] = (mask[:,:,np.newaxis] == np.arange(1, self.n_classes+1))
+        # else:
+        #     _mask = np.full([*mask.shape, self.n_classes], 0).astype(np.float32)
         img = torch.from_numpy(img).permute(2, 0, 1)
-        targets = {'mask': torch.from_numpy(_mask).permute(2,0,1),
+        targets = {'mask': torch.from_numpy(mask).unsqueeze(0),
                    'targets': uniqs
                   }
         return img, targets
 
     def __len__(self): return len(self.fs)
 
-
 class Dice_soft(Metric):
     def __init__(self, axis=1): 
         self.axis = axis 
-    def reset(self): self.inter,self.union = 0,0
+        self.num_classes = 3
+    def reset(self): #self.average_dice = 0
+        self.dice=[]
     def accumulate(self, learn):
-        pred,targ = flatten_check(torch.sigmoid(learn.pred[0]), learn.y['mask'])
-        self.inter += (pred*targ).float().sum().item()
-        self.union += (pred+targ).float().sum().item()
+        prob_mask = learn.pred[0].softmax(dim = 1)
+        pred_mask = torch.argmax(prob_mask, dim = 1)
+        tp, fp, fn, tn = smp.metrics.get_stats(pred_mask, 
+                                               learn.y['mask'].long().squeeze(), 
+                                               mode="multiclass", num_classes=5)
+        dice = 2*tp.sum()/(2*tp.sum() + fp.sum() + fn.sum())
+        self.dice += [dice]
     @property
-    def value(self): return 2.0 * self.inter/self.union if self.union > 0 else None
+    def value(self): return np.mean(self.dice)
+
+
+# class Dice_soft(Metric):
+#     def __init__(self, axis=1): 
+#         self.axis = axis 
+#     def reset(self): self.inter,self.union = 0,0
+#     def accumulate(self, learn):
+#         pred,targ = flatten_check(torch.sigmoid(torch.where(~torch.isnan(learn.y['mask']), 
+#                                                             learn.pred[0], 
+#                                                             torch.zeros_like(learn.pred[0]))), 
+#                                   torch.where(~torch.isnan(learn.y['mask']), 
+#                                               learn.y['mask'], 
+#                                               torch.zeros_like(learn.pred[0])))
+#         self.inter += (pred*targ).float().sum().item()
+#         self.union += (pred+targ).float().sum().item()
+#     @property
+#     def value(self): return 2.0 * self.inter/self.union if self.union > 0 else None
+
+
+class AccuracyMulti(Metric):
+    def reset(self): self.acc = []
+    def accumulate(self, learn):
+        pred, targ = flatten_check(torch.sigmoid(learn.pred[1]), learn.y['targets'])
+        acc = ((pred > 0.5).float() == targ).float().mean().item()
+        self.acc.append(acc)
+    @property
+    def value(self): return np.mean(self.acc) if len(self.acc) > 0 else 0
+
+    
+class ImgProcCB(Callback):
+    order = 10
+    def before_batch(self):
+        xb = K.enhance.normalize(self.xb[0]/255.0,
+                mean=torch.tensor(mean),
+                std=torch.tensor(std))
+        self.learn.xb = (xb,)
+
+
+class MultiRocMetric(AccumMetric):
+    def __init__(self):
+        super().__init__(roc_score)
+
+    def accumlate(self, learn):
+        pred = learn.pred
+        self.accum_values(pred[1], learn.y['targets'], learn)
+
+    def accum_values(self, preds, targs, learn=None):
+        to_d = learn.to_detach if learn is not None else to_detach
+        preds,targs = to_d(preds[1]), to_d(targs['targets'])
+        if self.flatten: preds, targs = flatten_check(preds, targs)
+        self.preds.append(preds)
+        self.targs.append(targs)
+
+
+def roc_score(*inp):
+    a, b = inp
+    return roc_auc_score(b, a) 
 
 def loss_fn(pred, target):
-    seg_loss = F.binary_cross_entropy_with_logits(pred[0], target['mask'].float(), reduction='none')
-    s = seg_loss.shape
-    seg_loss = torch.where(target['mask'] != -1, 
+    seg_loss_fn = smp.losses.LovaszLoss(smp.losses.MULTICLASS_MODE, from_logits=True)
+    seg_loss = seg_loss_fn(pred[0], target['mask'].float())
+    if learn.seg_loss_tracker == None:
+        learn.seg_loss_tracker = seg_loss.detach()
+    seg_loss = torch.where(~torch.isnan(target['mask']), 
                            seg_loss, 
-                           torch.zeros_like(seg_loss))
+                           learn.seg_loss_tracker if learn.seg_loss_tracker.shape == seg_loss.shape else torch.zeros_like(seg_loss))
+    learn.seg_loss_tracker = seg_loss.detach()
     cls_loss = F.binary_cross_entropy_with_logits(pred[1], target['targets'].float())
     return seg_loss.mean() + cls_loss
 
+s1_fs = sorted(os.listdir(train_masks))
+train_fs, val_fs = train_test_split(s1_fs, random_state=32, shuffle=True)
+s2_fs = list(set(os.listdir(img_root)) - set(s1_fs))
+train_fs1, val_fs2 = train_test_split(s2_fs, random_state=32, shuffle=True)
 
-train_fs, val_fs = train_test_split(sorted(os.listdir(img_root)), random_state=32, shuffle=True)
 
-train_ds = SegmentationDataset(train_fs, classes, get_aug(512))
-val_ds = SegmentationDataset(val_fs, classes, val_aug(512))
+train_ds = SegmentationDataset(train_fs, classes, get_aug(768))
+val_ds = SegmentationDataset(val_fs, classes, val_aug(768))
 
-dls = DataLoaders.from_dsets(train_ds, val_ds, batch_size=32, num_workers=4, pin_memory=True)
+dls = DataLoaders.from_dsets(train_ds, val_ds, batch_size=32, num_workers=4, 
+        pin_memory=True, drop_last=True, shuffle=True)
 
 model = UneXt50().cuda()
 
 learn = Learner(dls, model, loss_func=loss_fn,
-                metrics=[Dice_soft()],
+                metrics=[Dice_soft(),AccuracyMulti(), MultiRocMetric()],
                 cbs=[GradientClip(1.0),
+                    ImgProcCB(),
                     WandbCallback()],
                 splitter=split_layers).to_fp16()
+learn.seg_loss_tracker = None
 
 learn.freeze_to(-1) #doesn't work
 for param in learn.opt.param_groups[0]['params']:
@@ -326,7 +400,19 @@ for param in learn.opt.param_groups[0]['params']:
 learn.fit_one_cycle(4, lr_max=1e-3)
 
 learn.unfreeze()
-learn.fit_one_cycle(32, lr_max=slice(1e-4, 6e-4),
+learn.fit_one_cycle(16, lr_max=slice(1e-4, 6e-4),
+        cbs=[SaveModelCallback(monitor='dice_soft',
+            comp=np.greater),
+            ])
+
+train_ds = SegmentationDataset(train_fs+train_fs1, classes, get_aug(768))
+val_ds = SegmentationDataset(val_fs+val_fs2, classes, val_aug(768))
+
+dls = DataLoaders.from_dsets(train_ds, val_ds, batch_size=32, num_workers=4, pin_memory=True)
+
+learn.dls = dls
+
+learn.fit_one_cycle(16, lr_max=slice(1e-4, 6e-4),
         cbs=[SaveModelCallback(monitor='dice_soft',
             comp=np.greater),
             ])
